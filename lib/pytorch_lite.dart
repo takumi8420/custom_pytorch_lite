@@ -115,6 +115,36 @@ class PytorchLite {
 
     return dirPath;
   }
+
+  /// Sets pytorch segmentation model architecture and weights,
+  /// and returns a SegmentationModel.
+  static Future<SegmentationModel> loadSegmentationModel(
+      String modelPath,
+      String stateDictPath,
+      int imageWidth,
+      int imageHeight,
+      {ModelLocation modelLocation = ModelLocation.asset}) async {
+    if (modelLocation == ModelLocation.asset) {
+      modelPath = await _getAbsolutePath(modelPath);
+      stateDictPath = await _getAbsolutePath(stateDictPath);
+    }
+    // Load model architecture
+    int index = await ModelApi().loadModel(modelPath, null, imageWidth, imageHeight, null);
+
+    // Load state dict (重みファイル)
+    Uint8List weightData;
+    if (modelLocation == ModelLocation.asset) {
+      ByteData data = await rootBundle.load(stateDictPath);
+      weightData = data.buffer.asUint8List();
+    } else {
+      weightData = await File(stateDictPath).readAsBytes();
+    }
+
+    // Attach weights (state dict) to the loaded model
+    await ModelApi().attachWeights(index, weightData);
+
+    return SegmentationModel(index, imageWidth, imageHeight);
+  }
 }
 
 Future<String> _loadLabelsFile(String labelPath,
@@ -437,6 +467,52 @@ class ClassificationModel {
         preProcessingMethod: preProcessingMethod);
 
     return getProbabilities(prediction);
+  }
+
+  /// モデルの重みパラメータを後から設定するメソッド
+  Future<void> attachWeights(String weightPath,
+      {ModelLocation modelLocation = ModelLocation.asset}) async {
+    String path = weightPath;
+    if (modelLocation == ModelLocation.asset) {
+      path = await PytorchLite._getAbsolutePath(weightPath);
+    }
+    Uint8List weightData;
+    if (modelLocation == ModelLocation.asset) {
+      ByteData data = await rootBundle.load(weightPath);
+      weightData = data.buffer.asUint8List();
+    } else {
+      weightData = await File(weightPath).readAsBytes();
+    }
+
+    // ModelApi に重み付与用のAPIを実装している前提
+    await ModelApi().attachWeights(_index, weightData);
+  }
+}
+
+class SegmentationModel {
+  final int _index;
+  final int imageWidth;
+  final int imageHeight;
+
+  SegmentationModel(this._index, this.imageWidth, this.imageHeight);
+
+  /// Returns the segmentation mask as bytes for the given image.
+  /// preProcessingMethod により画像の前処理を選択できます。
+  Future<Uint8List> getSegmentationMask(Uint8List imageAsBytes,
+      {List<double> mean = torchVisionNormMeanRGB,
+      List<double> std = torchVisionNormSTDRGB,
+      PreProcessingMethod preProcessingMethod = PreProcessingMethod.imageLib}) async {
+    // Assert mean/std
+    assert(mean.length == 3, "mean should have size of 3");
+    assert(std.length == 3, "std should have size of 3");
+
+    if (preProcessingMethod == PreProcessingMethod.imageLib) {
+      Uint8List data = await ImageUtilsIsolate.convertImageBytesToFloatBuffer(
+          imageAsBytes, imageWidth, imageHeight, mean, std);
+      // ModelApi でセグメンテーション用の API を実装している前提
+      return await ModelApi().getRawSegmentationMask(_index, data);
+    }
+    return await ModelApi().getSegmentationMask(_index, imageAsBytes, mean, std);
   }
 }
 
